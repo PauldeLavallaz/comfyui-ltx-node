@@ -1,0 +1,8 @@
+[project]
+name = "comfyui-ltx-node"
+version = "1.0.0"
+description = "ComfyUI nodes for LTX-2 video generation API"
+dependencies = ["requests"]
+
+[project.urls]
+Repository = "https://github.com/PauldeLavallaz/comfyui-ltx-node"
