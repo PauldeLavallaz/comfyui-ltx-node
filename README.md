@@ -1,48 +1,58 @@
-# ComfyUI LTX-2 Video API Node
+# comfyui-ltx-node 🎬
 
-Custom ComfyUI nodes for [LTX-2](https://ltx.io) video generation API by Lightricks.
-
-## Features
-
-- 🎬 **Text to Video** — generate video from a text prompt
-- 🖼️➡️🎬 **Image to Video** — animate a static image
-- ➕ **Extend Video** — extend an existing video from start or end
-
-## Installation
-
-1. Clone into your ComfyUI custom_nodes folder:
-```bash
-cd ComfyUI/custom_nodes
-git clone https://github.com/PauldeLavallaz/comfyui-ltx-node
-```
-
-2. Restart ComfyUI
-
-3. Nodes appear under **LTX Video** category
-
-## Usage
-
-Get your API key at [console.ltx.video](https://console.ltx.video) and paste it into the `api_key` field of each node.
-
-### Models
-| Model | Speed | Quality |
-|-------|-------|---------|
-| `ltx-2-3-fast` | Fast | Good |
-| `ltx-2-3-pro` | Slower | Best |
-
-### Supported Resolutions
-- 1920x1080, 1080x1920, 1440x1080, 4096x2160
-
-### Duration
-- 6–20 seconds per request
+ComfyUI custom nodes for **LTX-2.3 Pro** video generation API ([ltx.video](https://ltx.video)).
 
 ## Nodes
 
-### LTX Text to Video
-Generate video from a text description.
+| Node | Input | Output |
+|------|-------|--------|
+| 🎤 **LTX Audio to Video** | IMAGE + audio path + prompt | lip-sync video |
+| 📝 **LTX Text to Video** | prompt | video |
+| 🖼️ **LTX Image to Video** | IMAGE + prompt | animated video |
+| ➕ **LTX Extend Video** | video URL + prompt | extended video |
+| 🔁 **LTX Retake Section** | video URL + frame range | retaken video |
+| ☁️ **LTX Image Uploader** | IMAGE | HTTPS URL |
 
-### LTX Image to Video  
-Animate a static image with a motion prompt. Requires a public image URL.
+## Installation
 
-### LTX Extend Video
-Extend an existing video from the beginning or end.
+```bash
+cd ComfyUI/custom_nodes
+git clone https://github.com/PauldeLavallaz/comfyui-ltx-node
+pip install requests pillow
+```
+
+## Usage
+
+1. Get your API key from [ltx.video/api-keys](https://ltx.video/api-keys)
+2. Add any **LTX** node to your workflow
+3. Paste your API key in the `api_key` field
+4. Connect inputs and run
+
+## Audio to Video (Lip-sync)
+
+The main node. Accepts:
+
+- **image** — ComfyUI IMAGE (auto-resized to max 1920px, uploaded automatically)
+- **audio_path** — local path to `.mp3`, `.ogg`, or `.wav` (auto-converted to MP3)
+- **prompt** — describe the motion/scene
+- **api_key** — your LTX API key
+- **model** — `ltx-2-3-pro` (best) or `ltx-2-3-fast` (quick tests)
+- **resolution** — `1080x1920` (portrait) or `1920x1080` (landscape)
+- **duration** — seconds (0 = auto-match audio length)
+- **negative_prompt** — what to avoid
+
+> ⚠️ Audio-to-video only supports `1080x1920` or `1920x1080`.  
+> Images larger than 1920px are auto-resized. OGG/WAV files are auto-converted to MP3.
+
+## Notes
+
+- All uploads go through [uguu.se](https://uguu.se) (temporary HTTPS hosting required by LTX API)
+- Videos are saved to ComfyUI's `output/` directory
+- `ffmpeg` required for OGG/WAV → MP3 conversion
+
+## Models
+
+| Model | Speed | Quality |
+|-------|-------|---------|
+| `ltx-2-3-pro` | ~30-60s | Best |
+| `ltx-2-3-fast` | ~17s | Good for testing |
