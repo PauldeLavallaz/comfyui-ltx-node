@@ -8,6 +8,7 @@ import io
 import time
 import requests
 import tempfile
+import subprocess
 import numpy as np
 import torch
 from PIL import Image
@@ -119,8 +120,44 @@ def download_video(r: requests.Response, prefix: str) -> str:
     return out_path
 
 
-def ltx_post(endpoint: str, api_key: str, payload: dict) -> str:
-    """POST to LTX API and return saved video path."""
+def video_bytes_to_image_tensor(video_bytes: bytes) -> torch.Tensor:
+    """
+    Decode video bytes → ComfyUI IMAGE tensor [F, H, W, C] float32 in [0,1].
+    Uses ffmpeg to extract frames as PNG via pipe.
+    """
+    cmd = [
+        "ffmpeg", "-i", "pipe:0",
+        "-f", "image2pipe", "-vcodec", "png", "-",
+        "-loglevel", "error"
+    ]
+    proc = subprocess.run(cmd, input=video_bytes, capture_output=True)
+    if proc.returncode != 0:
+        raise RuntimeError(f"ffmpeg frame extraction failed: {proc.stderr.decode()[:300]}")
+
+    # Split PNG stream into individual frames
+    raw = proc.stdout
+    frames = []
+    i = 0
+    while i < len(raw):
+        # PNG signature: 8 bytes \x89PNG\r\n\x1a\n
+        start = raw.find(b'\x89PNG\r\n\x1a\n', i)
+        if start == -1:
+            break
+        end = raw.find(b'\x89PNG\r\n\x1a\n', start + 8)
+        chunk = raw[start:end] if end != -1 else raw[start:]
+        img = Image.open(io.BytesIO(chunk)).convert("RGB")
+        frames.append(np.array(img, dtype=np.float32) / 255.0)
+        i = end if end != -1 else len(raw)
+
+    if not frames:
+        raise RuntimeError("No frames decoded from LTX video output.")
+
+    print(f"[LTX] Decoded {len(frames)} frames")
+    return torch.from_numpy(np.stack(frames))  # [F, H, W, C]
+
+
+def ltx_post(endpoint: str, api_key: str, payload: dict) -> tuple:
+    """POST to LTX API, save video, return (image_tensor, video_path)."""
     url = f"{LTX_BASE_URL}/{endpoint}"
     print(f"[LTX] → POST {endpoint} | payload keys: {list(payload.keys())}")
     r = requests.post(
@@ -128,11 +165,18 @@ def ltx_post(endpoint: str, api_key: str, payload: dict) -> str:
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
         json=payload,
         timeout=300,
-        stream=True,
     )
     if r.status_code != 200:
         raise RuntimeError(f"LTX API {r.status_code}: {r.text[:400]}")
-    return download_video(r, endpoint.replace("-", "_"))
+
+    video_bytes = r.content
+    out_path = get_output_path(endpoint.replace("-", "_"))
+    with open(out_path, "wb") as f:
+        f.write(video_bytes)
+    print(f"[LTX] Video saved: {out_path}")
+
+    frames = video_bytes_to_image_tensor(video_bytes)
+    return frames, out_path
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -183,8 +227,8 @@ class LTXAudioToVideo:
             },
         }
 
-    RETURN_TYPES = ("STRING",)
-    RETURN_NAMES = ("video_path",)
+    RETURN_TYPES = ("IMAGE", "STRING")
+    RETURN_NAMES = ("frames", "video_path")
     FUNCTION = "generate"
     CATEGORY = "LTX Video"
     OUTPUT_NODE = True
@@ -219,7 +263,8 @@ class LTXAudioToVideo:
         if duration and duration > 0:
             payload["duration"] = duration
 
-        return (ltx_post("audio-to-video", api_key.strip(), payload),)
+        frames, video_path = ltx_post("audio-to-video", api_key.strip(), payload)
+        return (frames, video_path)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -249,8 +294,8 @@ class LTXTextToVideo:
             },
         }
 
-    RETURN_TYPES = ("STRING",)
-    RETURN_NAMES = ("video_path",)
+    RETURN_TYPES = ("IMAGE", "STRING")
+    RETURN_NAMES = ("frames", "video_path")
     FUNCTION = "generate"
     CATEGORY = "LTX Video"
     OUTPUT_NODE = True
@@ -272,7 +317,8 @@ class LTXTextToVideo:
         if seed >= 0:
             payload["seed"] = seed
 
-        return (ltx_post("text-to-video", api_key.strip(), payload),)
+        frames, video_path = ltx_post("text-to-video", api_key.strip(), payload)
+        return (frames, video_path)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -302,8 +348,8 @@ class LTXImageToVideo:
             },
         }
 
-    RETURN_TYPES = ("STRING",)
-    RETURN_NAMES = ("video_path",)
+    RETURN_TYPES = ("IMAGE", "STRING")
+    RETURN_NAMES = ("frames", "video_path")
     FUNCTION = "generate"
     CATEGORY = "LTX Video"
     OUTPUT_NODE = True
@@ -330,7 +376,8 @@ class LTXImageToVideo:
         if seed >= 0:
             payload["seed"] = seed
 
-        return (ltx_post("image-to-video", api_key.strip(), payload),)
+        frames, video_path = ltx_post("image-to-video", api_key.strip(), payload)
+        return (frames, video_path)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -363,8 +410,8 @@ class LTXExtendVideo:
             },
         }
 
-    RETURN_TYPES = ("STRING",)
-    RETURN_NAMES = ("video_path",)
+    RETURN_TYPES = ("IMAGE", "STRING")
+    RETURN_NAMES = ("frames", "video_path")
     FUNCTION = "extend"
     CATEGORY = "LTX Video"
     OUTPUT_NODE = True
@@ -384,7 +431,8 @@ class LTXExtendVideo:
         if negative_prompt.strip():
             payload["negative_prompt"] = negative_prompt
 
-        return (ltx_post("extend", api_key.strip(), payload),)
+        frames, video_path = ltx_post("extend", api_key.strip(), payload)
+        return (frames, video_path)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -417,8 +465,8 @@ class LTXRetakeVideo:
             },
         }
 
-    RETURN_TYPES = ("STRING",)
-    RETURN_NAMES = ("video_path",)
+    RETURN_TYPES = ("IMAGE", "STRING")
+    RETURN_NAMES = ("frames", "video_path")
     FUNCTION = "retake"
     CATEGORY = "LTX Video"
     OUTPUT_NODE = True
@@ -438,7 +486,8 @@ class LTXRetakeVideo:
         if negative_prompt.strip():
             payload["negative_prompt"] = negative_prompt
 
-        return (ltx_post("retake", api_key.strip(), payload),)
+        frames, video_path = ltx_post("retake", api_key.strip(), payload)
+        return (frames, video_path)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
