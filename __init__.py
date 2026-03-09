@@ -60,29 +60,45 @@ def tensor_to_jpeg_bytes(image_tensor, max_dim=1920) -> bytes:
     return buf.getvalue()
 
 
-def audio_path_to_mp3_bytes(audio_path: str) -> bytes:
+def audio_tensor_to_mp3_bytes(audio: dict) -> bytes:
     """
-    Read an audio file. If it's OGG/WAV, convert to MP3 via ffmpeg.
-    Returns MP3 bytes (LTX requires audio/mpeg MIME type).
+    Convert ComfyUI AUDIO dict {'waveform': Tensor[B,C,T], 'sample_rate': int}
+    to MP3 bytes via ffmpeg (raw PCM pipe).
+    LTX requires audio/mpeg MIME type.
     """
-    audio_path = os.path.expanduser(audio_path.strip())
-    if not os.path.isfile(audio_path):
-        raise FileNotFoundError(f"Audio file not found: {audio_path}")
+    waveform = audio["waveform"]   # [B, C, T] float32 in [-1, 1]
+    sample_rate = audio["sample_rate"]
 
-    ext = os.path.splitext(audio_path)[1].lower()
-    if ext == ".mp3":
-        with open(audio_path, "rb") as f:
-            return f.read()
+    # Take first batch, mix to mono or keep stereo
+    if waveform.ndim == 3:
+        waveform = waveform[0]     # [C, T]
+    if waveform.shape[0] > 2:
+        waveform = waveform[:2]    # max stereo
 
-    # Convert to MP3
-    tmp_mp3 = audio_path + "_ltx_tmp.mp3"
-    ret = os.system(f'ffmpeg -y -i "{audio_path}" -acodec libmp3lame -q:a 2 "{tmp_mp3}" -loglevel quiet')
-    if ret != 0:
-        raise RuntimeError(f"ffmpeg conversion failed for {audio_path}")
-    with open(tmp_mp3, "rb") as f:
-        data = f.read()
-    os.remove(tmp_mp3)
-    return data
+    channels = waveform.shape[0]
+    # Convert to 16-bit PCM bytes
+    pcm = (waveform.cpu().numpy() * 32767).clip(-32768, 32767).astype("int16")
+    # Interleave channels: [T, C] → flatten
+    pcm_bytes = pcm.T.flatten().tobytes()
+
+    # ffmpeg: read raw PCM from stdin, output MP3 to stdout
+    import subprocess
+    cmd = [
+        "ffmpeg", "-y",
+        "-f", "s16le",
+        "-ar", str(sample_rate),
+        "-ac", str(channels),
+        "-i", "pipe:0",
+        "-acodec", "libmp3lame",
+        "-q:a", "2",
+        "-f", "mp3",
+        "pipe:1",
+    ]
+    proc = subprocess.run(cmd, input=pcm_bytes, capture_output=True)
+    if proc.returncode != 0:
+        raise RuntimeError(f"ffmpeg MP3 encode failed: {proc.stderr.decode()[:200]}")
+    print(f"[LTX] Audio encoded: {len(proc.stdout)/1024:.1f} KB MP3 @ {sample_rate}Hz {channels}ch")
+    return proc.stdout
 
 
 def get_output_path(prefix: str, ext: str = "mp4") -> str:
@@ -140,10 +156,8 @@ class LTXAudioToVideo:
                     "tooltip": "LTX API key from ltx.video/api-keys",
                 }),
                 "image": ("IMAGE",),
-                "audio_path": ("STRING", {
-                    "default": "",
-                    "multiline": False,
-                    "tooltip": "Local path to audio file (.mp3, .ogg, .wav). Will be converted to MP3.",
+                "audio": ("AUDIO", {
+                    "tooltip": "Connect a Load Audio node here.",
                 }),
                 "prompt": ("STRING", {
                     "default": "A person speaking naturally, slight head movement, realistic lip sync.",
@@ -175,7 +189,7 @@ class LTXAudioToVideo:
     CATEGORY = "LTX Video"
     OUTPUT_NODE = True
 
-    def generate(self, api_key, image, audio_path, prompt,
+    def generate(self, api_key, image, audio, prompt,
                  model="ltx-2-3-pro", resolution="1080x1920",
                  duration=0, negative_prompt="blurry, distorted, low quality"):
 
@@ -187,9 +201,9 @@ class LTXAudioToVideo:
         img_bytes = tensor_to_jpeg_bytes(image, max_dim=1920)
         image_url = upload_to_uguu(img_bytes, "ltx_image.jpg", "image/jpeg")
 
-        # 2. Upload audio
-        print("[LTX] Uploading audio...")
-        audio_bytes = audio_path_to_mp3_bytes(audio_path)
+        # 2. Convert AUDIO tensor → MP3 and upload
+        print("[LTX] Encoding + uploading audio...")
+        audio_bytes = audio_tensor_to_mp3_bytes(audio)
         audio_url = upload_to_uguu(audio_bytes, "ltx_audio.mp3", "audio/mpeg")
 
         # 3. Build payload
