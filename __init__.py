@@ -61,45 +61,73 @@ def tensor_to_jpeg_bytes(image_tensor, max_dim=1920) -> bytes:
     return buf.getvalue()
 
 
-def audio_tensor_to_mp3_bytes(audio: dict) -> bytes:
+def _find_ffmpeg() -> str | None:
+    """Find ffmpeg binary in common locations."""
+    import shutil
+    if shutil.which("ffmpeg"):
+        return "ffmpeg"
+    for p in ["/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/opt/conda/bin/ffmpeg"]:
+        if os.path.exists(p):
+            return p
+    return None
+
+
+def audio_tensor_to_bytes(audio: dict) -> tuple:
     """
     Convert ComfyUI AUDIO dict {'waveform': Tensor[B,C,T], 'sample_rate': int}
-    to MP3 bytes via ffmpeg (raw PCM pipe).
-    LTX requires audio/mpeg MIME type.
+    to (bytes, mime_type). Tries torchaudio MP3 → torchaudio WAV → wave WAV.
+    No ffmpeg required.
     """
     waveform = audio["waveform"]   # [B, C, T] float32 in [-1, 1]
     sample_rate = audio["sample_rate"]
 
-    # Take first batch, mix to mono or keep stereo
     if waveform.ndim == 3:
         waveform = waveform[0]     # [C, T]
     if waveform.shape[0] > 2:
         waveform = waveform[:2]    # max stereo
 
-    channels = waveform.shape[0]
-    # Convert to 16-bit PCM bytes
-    pcm = (waveform.cpu().numpy() * 32767).clip(-32768, 32767).astype("int16")
-    # Interleave channels: [T, C] → flatten
-    pcm_bytes = pcm.T.flatten().tobytes()
+    # 1. Try torchaudio MP3
+    try:
+        import torchaudio
+        buf = io.BytesIO()
+        torchaudio.save(buf, waveform.cpu(), sample_rate, format="mp3")
+        data = buf.getvalue()
+        print(f"[LTX] Audio encoded via torchaudio MP3: {len(data)/1024:.1f} KB")
+        return data, "audio/mpeg"
+    except Exception as e:
+        print(f"[LTX] torchaudio MP3 failed ({e}), trying WAV...")
 
-    # ffmpeg: read raw PCM from stdin, output MP3 to stdout
-    import subprocess
-    cmd = [
-        "ffmpeg", "-y",
-        "-f", "s16le",
-        "-ar", str(sample_rate),
-        "-ac", str(channels),
-        "-i", "pipe:0",
-        "-acodec", "libmp3lame",
-        "-q:a", "2",
-        "-f", "mp3",
-        "pipe:1",
-    ]
-    proc = subprocess.run(cmd, input=pcm_bytes, capture_output=True)
-    if proc.returncode != 0:
-        raise RuntimeError(f"ffmpeg MP3 encode failed: {proc.stderr.decode()[:200]}")
-    print(f"[LTX] Audio encoded: {len(proc.stdout)/1024:.1f} KB MP3 @ {sample_rate}Hz {channels}ch")
-    return proc.stdout
+    # 2. Try torchaudio WAV
+    try:
+        import torchaudio
+        buf = io.BytesIO()
+        torchaudio.save(buf, waveform.cpu(), sample_rate, format="wav")
+        data = buf.getvalue()
+        print(f"[LTX] Audio encoded via torchaudio WAV: {len(data)/1024:.1f} KB")
+        return data, "audio/wav"
+    except Exception as e:
+        print(f"[LTX] torchaudio WAV failed ({e}), trying wave module...")
+
+    # 3. Fallback: Python wave module (WAV, no deps)
+    import wave
+    channels = waveform.shape[0]
+    pcm = (waveform.cpu().numpy() * 32767).clip(-32768, 32767).astype("int16")
+    pcm_bytes = pcm.T.flatten().tobytes()
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(channels)
+        wf.setsampwidth(2)
+        wf.setframerate(sample_rate)
+        wf.writeframes(pcm_bytes)
+    data = buf.getvalue()
+    print(f"[LTX] Audio encoded via wave module WAV: {len(data)/1024:.1f} KB")
+    return data, "audio/wav"
+
+
+# Keep old name as alias for compatibility
+def audio_tensor_to_mp3_bytes(audio: dict) -> bytes:
+    data, _ = audio_tensor_to_bytes(audio)
+    return data
 
 
 def get_output_path(prefix: str, ext: str = "mp4") -> str:
@@ -123,37 +151,69 @@ def download_video(r: requests.Response, prefix: str) -> str:
 def video_bytes_to_image_tensor(video_bytes: bytes) -> torch.Tensor:
     """
     Decode video bytes → ComfyUI IMAGE tensor [F, H, W, C] float32 in [0,1].
-    Uses ffmpeg to extract frames as PNG via pipe.
+    Tries torchvision → cv2 → ffmpeg (in that order).
     """
-    cmd = [
-        "ffmpeg", "-i", "pipe:0",
-        "-f", "image2pipe", "-vcodec", "png", "-",
-        "-loglevel", "error"
-    ]
-    proc = subprocess.run(cmd, input=video_bytes, capture_output=True)
-    if proc.returncode != 0:
-        raise RuntimeError(f"ffmpeg frame extraction failed: {proc.stderr.decode()[:300]}")
+    # Write to temp file (all decoders need a seekable file)
+    tmp = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
+    tmp.write(video_bytes)
+    tmp.close()
+    tmp_path = tmp.name
 
-    # Split PNG stream into individual frames
-    raw = proc.stdout
-    frames = []
-    i = 0
-    while i < len(raw):
-        # PNG signature: 8 bytes \x89PNG\r\n\x1a\n
-        start = raw.find(b'\x89PNG\r\n\x1a\n', i)
-        if start == -1:
-            break
-        end = raw.find(b'\x89PNG\r\n\x1a\n', start + 8)
-        chunk = raw[start:end] if end != -1 else raw[start:]
-        img = Image.open(io.BytesIO(chunk)).convert("RGB")
-        frames.append(np.array(img, dtype=np.float32) / 255.0)
-        i = end if end != -1 else len(raw)
+    try:
+        # 1. Try torchvision (always available in ComfyUI)
+        try:
+            import torchvision.io as tvio
+            frames, _, _ = tvio.read_video(tmp_path, pts_unit="sec", output_format="THWC")
+            # frames: [T, H, W, C] uint8
+            result = frames.float() / 255.0
+            print(f"[LTX] Decoded {len(result)} frames via torchvision")
+            return result
+        except Exception as e:
+            print(f"[LTX] torchvision failed ({e}), trying cv2...")
 
-    if not frames:
-        raise RuntimeError("No frames decoded from LTX video output.")
+        # 2. Try cv2
+        try:
+            import cv2
+            cap = cv2.VideoCapture(tmp_path)
+            frames = []
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+            cap.release()
+            if frames:
+                result = torch.from_numpy(np.stack(frames).astype(np.float32) / 255.0)
+                print(f"[LTX] Decoded {len(result)} frames via cv2")
+                return result
+        except Exception as e:
+            print(f"[LTX] cv2 failed ({e}), trying ffmpeg...")
 
-    print(f"[LTX] Decoded {len(frames)} frames")
-    return torch.from_numpy(np.stack(frames))  # [F, H, W, C]
+        # 3. Try ffmpeg (last resort)
+        ffmpeg = _find_ffmpeg()
+        if ffmpeg:
+            cmd = [ffmpeg, "-i", tmp_path, "-f", "image2pipe", "-vcodec", "png", "-", "-loglevel", "error"]
+            proc = subprocess.run(cmd, capture_output=True)
+            if proc.returncode == 0:
+                raw = proc.stdout
+                frames = []
+                i = 0
+                while i < len(raw):
+                    start = raw.find(b'\x89PNG\r\n\x1a\n', i)
+                    if start == -1:
+                        break
+                    end = raw.find(b'\x89PNG\r\n\x1a\n', start + 8)
+                    chunk = raw[start:end] if end != -1 else raw[start:]
+                    img = Image.open(io.BytesIO(chunk)).convert("RGB")
+                    frames.append(np.array(img, dtype=np.float32) / 255.0)
+                    i = end if end != -1 else len(raw)
+                if frames:
+                    print(f"[LTX] Decoded {len(frames)} frames via ffmpeg")
+                    return torch.from_numpy(np.stack(frames))
+
+        raise RuntimeError("No video decoder available. Install torchvision, cv2, or ffmpeg.")
+    finally:
+        os.unlink(tmp_path)
 
 
 def ltx_post(endpoint: str, api_key: str, payload: dict) -> tuple:
@@ -247,8 +307,9 @@ class LTXAudioToVideo:
 
         # 2. Convert AUDIO tensor → MP3 and upload
         print("[LTX] Encoding + uploading audio...")
-        audio_bytes = audio_tensor_to_mp3_bytes(audio)
-        audio_url = upload_to_uguu(audio_bytes, "ltx_audio.mp3", "audio/mpeg")
+        audio_bytes, audio_mime = audio_tensor_to_bytes(audio)
+        audio_ext = "mp3" if "mpeg" in audio_mime else "wav"
+        audio_url = upload_to_uguu(audio_bytes, f"ltx_audio.{audio_ext}", audio_mime)
 
         # 3. Build payload
         payload = {
