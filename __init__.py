@@ -394,8 +394,8 @@ class LTXAudioToVideo:
             },
         }
 
-    RETURN_TYPES = ("IMAGE", "STRING", "FLOAT")
-    RETURN_NAMES = ("frames", "video_path", "fps")
+    RETURN_TYPES = ("IMAGE", "VIDEO", "FLOAT")
+    RETURN_NAMES = ("frames", "video", "fps")
     FUNCTION = "generate"
     CATEGORY = "LTX Video"
     OUTPUT_NODE = True
@@ -461,8 +461,8 @@ class LTXTextToVideo:
             },
         }
 
-    RETURN_TYPES = ("IMAGE", "STRING", "FLOAT")
-    RETURN_NAMES = ("frames", "video_path", "fps")
+    RETURN_TYPES = ("IMAGE", "VIDEO", "FLOAT")
+    RETURN_NAMES = ("frames", "video", "fps")
     FUNCTION = "generate"
     CATEGORY = "LTX Video"
     OUTPUT_NODE = True
@@ -515,8 +515,8 @@ class LTXImageToVideo:
             },
         }
 
-    RETURN_TYPES = ("IMAGE", "STRING", "FLOAT")
-    RETURN_NAMES = ("frames", "video_path", "fps")
+    RETURN_TYPES = ("IMAGE", "VIDEO", "FLOAT")
+    RETURN_NAMES = ("frames", "video", "fps")
     FUNCTION = "generate"
     CATEGORY = "LTX Video"
     OUTPUT_NODE = True
@@ -577,8 +577,8 @@ class LTXExtendVideo:
             },
         }
 
-    RETURN_TYPES = ("IMAGE", "STRING", "FLOAT")
-    RETURN_NAMES = ("frames", "video_path", "fps")
+    RETURN_TYPES = ("IMAGE", "VIDEO", "FLOAT")
+    RETURN_NAMES = ("frames", "video", "fps")
     FUNCTION = "extend"
     CATEGORY = "LTX Video"
     OUTPUT_NODE = True
@@ -632,8 +632,8 @@ class LTXRetakeVideo:
             },
         }
 
-    RETURN_TYPES = ("IMAGE", "STRING", "FLOAT")
-    RETURN_NAMES = ("frames", "video_path", "fps")
+    RETURN_TYPES = ("IMAGE", "VIDEO", "FLOAT")
+    RETURN_NAMES = ("frames", "video", "fps")
     FUNCTION = "retake"
     CATEGORY = "LTX Video"
     OUTPUT_NODE = True
@@ -755,8 +755,8 @@ class LTXAudioToVideoReplicate:
             },
         }
 
-    RETURN_TYPES = ("IMAGE", "STRING", "FLOAT")
-    RETURN_NAMES = ("frames", "video_path", "fps_out")
+    RETURN_TYPES = ("IMAGE", "VIDEO", "FLOAT")
+    RETURN_NAMES = ("frames", "video", "fps_out")
     FUNCTION = "generate"
     CATEGORY = "LTX Video"
     OUTPUT_NODE = True
