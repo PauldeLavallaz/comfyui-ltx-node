@@ -369,9 +369,9 @@ def ltx_post(endpoint: str, api_key: str, payload: dict) -> tuple:
 
 class LTXAudioToVideo:
     """
-    LTX-2.3 Audio-to-Video: lip-sync video from image + audio.
-    Accepts native ComfyUI IMAGE tensor and local audio path.
-    Automatically uploads both to uguu.se (HTTPS) as required by LTX API.
+    LTX Audio-to-Video: lip-sync video from image + audio.
+    Endpoint: POST https://api.ltx.video/v1/audio-to-video
+    Returns 25fps video synchronised to audio.
     """
 
     @classmethod
@@ -393,20 +393,17 @@ class LTXAudioToVideo:
                 }),
             },
             "optional": {
-                "model": (["ltx-2-3-pro", "ltx-2-3-fast"], {"default": "ltx-2-3-pro"}),
+                "model": (["ltx-2-3-pro", "ltx-2-pro"], {"default": "ltx-2-3-pro"}),
                 "resolution": (["1080x1920", "1920x1080"], {
                     "default": "1080x1920",
-                    "tooltip": "Audio-to-video only supports these two resolutions.",
+                    "tooltip": "Portrait or landscape. Auto-detected from image if omitted.",
                 }),
-                "duration": ("INT", {
-                    "default": 0,
-                    "min": 0,
-                    "max": 30,
-                    "tooltip": "Duration in seconds. Set 0 to auto-match audio length.",
-                }),
-                "negative_prompt": ("STRING", {
-                    "default": "blurry, distorted, low quality, static, frozen",
-                    "multiline": True,
+                "guidance_scale": ("FLOAT", {
+                    "default": 7.5,
+                    "min": 1.0,
+                    "max": 20.0,
+                    "step": 0.5,
+                    "tooltip": "CFG scale. Higher = follows prompt more strictly. Default 9 when image provided.",
                 }),
             },
         }
@@ -418,35 +415,32 @@ class LTXAudioToVideo:
     OUTPUT_NODE = True
 
     def generate(self, api_key, image, audio, prompt,
-                 model="ltx-2-3-pro", resolution="1080x1920",
-                 duration=0, negative_prompt="blurry, distorted, low quality"):
+                 model="ltx-2-3-pro", resolution="1080x1920", guidance_scale=7.5):
 
         if not api_key.strip():
             raise ValueError("LTX API key is required.")
 
-        # 1. Upload image
+        # 1. Upload image to catbox.moe
         print("[LTX] Uploading image...")
         img_bytes = tensor_to_jpeg_bytes(image, max_dim=1920)
         image_url = upload_to_uguu(img_bytes, "ltx_image.jpg", "image/jpeg")
 
-        # 2. Convert AUDIO tensor → MP3/WAV and upload
+        # 2. Convert AUDIO tensor → MP3 and upload to catbox.moe
         print("[LTX] Encoding + uploading audio...")
         audio_bytes, audio_mime, audio_filename = audio_tensor_to_bytes(audio)
         audio_url = upload_to_uguu(audio_bytes, audio_filename, audio_mime)
 
-        # 3. Build payload
+        # 3. Call API
         payload = {
             "audio_uri": audio_url,
             "image_uri": image_url,
             "prompt": prompt,
             "model": model,
             "resolution": resolution,
+            "guidance_scale": guidance_scale,
         }
-        if negative_prompt.strip():
-            payload["negative_prompt"] = negative_prompt
-        if duration and duration > 0:
-            payload["duration"] = duration
 
+        print(f"[LTX] audio-to-video | model={model} res={resolution} cfg={guidance_scale}")
         frames, video_path, ui = ltx_post("audio-to-video", api_key.strip(), payload)
         return {"ui": ui, "result": (frames, video_path, 25.0)}
 
