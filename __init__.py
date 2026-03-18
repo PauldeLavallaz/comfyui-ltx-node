@@ -28,13 +28,39 @@ UGUU_UPLOAD_URL = "https://uguu.se/upload"
 # ─────────────────────────────────────────────────────────────────────────────
 
 def upload_to_uguu(data: bytes, filename: str, content_type: str) -> str:
-    """Upload bytes to uguu.se and return public HTTPS URL."""
+    """Upload bytes and return public HTTPS URL with correct Content-Type.
+
+    Strategy:
+      1. 0x0.st — preserves content-type via file extension (primary for audio)
+      2. uguu.se — fallback for images (extension-based too)
+    The LTX API validates Content-Type headers on the URL; uguu.se sometimes
+    serves audio as application/octet-stream, which causes HTTP 400.
+    """
+    is_audio = content_type.startswith("audio/")
+
+    if is_audio:
+        # 0x0.st returns URLs like https://0x0.st/AbCd.mp3 — extension preserved
+        try:
+            r = requests.post(
+                "https://0x0.st",
+                files={"file": (filename, data, content_type)},
+                timeout=60,
+            )
+            r.raise_for_status()
+            url = r.text.strip()
+            if url.startswith("https://"):
+                print(f"[LTX] Uploaded (0x0.st) {filename} → {url}")
+                return url
+        except Exception as e:
+            print(f"[LTX] 0x0.st failed ({e}), falling back to uguu.se...")
+
+    # Fallback / images: uguu.se
     files = {"files[]": (filename, data, content_type)}
     r = requests.post(UGUU_UPLOAD_URL, files=files, timeout=60)
     r.raise_for_status()
     j = r.json()
     url = j["files"][0]["url"]
-    print(f"[LTX] Uploaded {filename} → {url}")
+    print(f"[LTX] Uploaded (uguu.se) {filename} → {url}")
     return url
 
 
