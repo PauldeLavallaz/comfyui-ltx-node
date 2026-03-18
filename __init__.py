@@ -30,29 +30,49 @@ UGUU_UPLOAD_URL = "https://uguu.se/upload"
 def upload_to_uguu(data: bytes, filename: str, content_type: str) -> str:
     """Upload bytes and return public HTTPS URL with correct Content-Type.
 
-    Strategy:
-      1. 0x0.st — preserves content-type via file extension (primary for audio)
-      2. uguu.se — fallback for images (extension-based too)
-    The LTX API validates Content-Type headers on the URL; uguu.se sometimes
-    serves audio as application/octet-stream, which causes HTTP 400.
+    Strategy for audio:
+      1. catbox.moe (permanent, high-availability, no hotlink restrictions)
+      2. litterbox.catbox.moe (72h temp, fallback)
+      3. uguu.se (fallback for images)
+
+    The LTX API validates Content-Type headers; 0x0.st and uguu.se sometimes
+    block or throttle external fetches from LTX servers (causes HTTP 400/500).
+    catbox.moe is widely whitelisted and returns direct URLs with correct MIME.
     """
     is_audio = content_type.startswith("audio/")
 
     if is_audio:
-        # 0x0.st returns URLs like https://0x0.st/AbCd.mp3 — extension preserved
+        # 1. catbox.moe — permanent, no hotlink restrictions, widely accessible
         try:
             r = requests.post(
-                "https://0x0.st",
-                files={"file": (filename, data, content_type)},
+                "https://catbox.moe/user/api.php",
+                data={"reqtype": "fileupload", "userhash": ""},
+                files={"fileToUpload": (filename, data, content_type)},
                 timeout=60,
             )
             r.raise_for_status()
             url = r.text.strip()
             if url.startswith("https://"):
-                print(f"[LTX] Uploaded (0x0.st) {filename} → {url}")
+                print(f"[LTX] Uploaded (catbox.moe) {filename} → {url}")
                 return url
         except Exception as e:
-            print(f"[LTX] 0x0.st failed ({e}), falling back to uguu.se...")
+            print(f"[LTX] catbox.moe failed ({e}), trying litterbox...")
+
+        # 2. litterbox.catbox.moe — 72h temporary
+        try:
+            r = requests.post(
+                "https://litterbox.catbox.moe/resources/internals/api.php",
+                data={"reqtype": "fileupload", "time": "72h"},
+                files={"fileToUpload": (filename, data, content_type)},
+                timeout=60,
+            )
+            r.raise_for_status()
+            url = r.text.strip()
+            if url.startswith("https://"):
+                print(f"[LTX] Uploaded (litterbox) {filename} → {url}")
+                return url
+        except Exception as e:
+            print(f"[LTX] litterbox failed ({e}), falling back to uguu.se...")
 
     # Fallback / images: uguu.se
     files = {"files[]": (filename, data, content_type)}
