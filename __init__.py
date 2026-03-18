@@ -706,3 +706,157 @@ NODE_DISPLAY_NAME_MAPPINGS = {
 }
 
 print("[LTX] LTX-2.3 ComfyUI nodes loaded ✅ — Audio/Image/Text to Video + Extend + Retake")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NODE: Audio to Video via REPLICATE (fixed version)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class LTXAudioToVideoReplicate:
+    """
+    LTX-2.3 Audio-to-Video via Replicate API.
+    Properly uploads image + audio before calling Replicate (fixes base64 bug).
+    Returns frames + video_path + fps, AND shows video preview in ComfyUI UI.
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "replicate_api_key": ("STRING", {
+                    "default": "",
+                    "multiline": False,
+                    "tooltip": "Replicate API token (r8_...)",
+                }),
+                "image": ("IMAGE",),
+                "audio": ("AUDIO",),
+                "prompt": ("STRING", {
+                    "default": "A person speaking naturally, slight head movement, realistic lip sync.",
+                    "multiline": True,
+                }),
+            },
+            "optional": {
+                "model": (["ltx-2-3-pro", "ltx-2-3-fast"], {"default": "ltx-2-3-pro"}),
+                "aspect_ratio": (["9:16", "16:9", "1:1"], {"default": "9:16"}),
+                "fps": ("INT", {"default": 25, "min": 24, "max": 50}),
+                "seed": ("INT", {"default": -1, "min": -1, "max": 2147483647,
+                                 "tooltip": "-1 for random."}),
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE", "STRING", "FLOAT")
+    RETURN_NAMES = ("frames", "video_path", "fps_out")
+    FUNCTION = "generate"
+    CATEGORY = "LTX Video"
+    OUTPUT_NODE = True
+
+    def generate(self, replicate_api_key, image, audio, prompt,
+                 model="ltx-2-3-pro", aspect_ratio="9:16", fps=25, seed=-1):
+
+        if not replicate_api_key.strip():
+            raise ValueError("Replicate API key is required.")
+
+        api_key = replicate_api_key.strip()
+
+        # 1. Upload image to catbox.moe (public URL)
+        print("[LTX-Replicate] Uploading image...")
+        img_bytes = tensor_to_jpeg_bytes(image, max_dim=1920)
+        image_url = upload_to_uguu(img_bytes, "ltx_image.jpg", "image/jpeg")
+
+        # 2. Upload audio to catbox.moe (public URL)
+        print("[LTX-Replicate] Encoding + uploading audio...")
+        audio_bytes, audio_mime, audio_filename = audio_tensor_to_bytes(audio)
+        audio_url = upload_to_uguu(audio_bytes, audio_filename, audio_mime)
+
+        # 3. Build Replicate payload
+        model_id = "lightricks/ltx-2.3-pro" if model == "ltx-2-3-pro" else "lightricks/ltx-2.3-fast"
+        payload = {
+            "input": {
+                "task": "audio_to_video",
+                "image": image_url,
+                "audio": audio_url,
+                "prompt": prompt,
+                "resolution": "1080p",
+                "aspect_ratio": aspect_ratio,
+                "fps": fps,
+            }
+        }
+        if seed >= 0:
+            payload["input"]["seed"] = seed
+
+        print(f"[LTX-Replicate] → POST {model_id} | image: {image_url[:60]}...")
+
+        # 4. Submit prediction
+        r = requests.post(
+            f"https://api.replicate.com/v1/models/{model_id}/predictions",
+            headers={
+                "Authorization": f"Token {api_key}",
+                "Content-Type": "application/json",
+                "Prefer": "wait",
+            },
+            json=payload,
+            timeout=300,
+        )
+        if r.status_code not in (200, 201):
+            raise RuntimeError(f"Replicate API {r.status_code}: {r.text[:400]}")
+
+        result = r.json()
+
+        # 5. Poll if not done yet
+        if result.get("status") not in ("succeeded", "failed"):
+            pred_id = result["id"]
+            print(f"[LTX-Replicate] Polling prediction {pred_id}...")
+            for _ in range(120):  # max 4 min polling
+                time.sleep(2)
+                poll = requests.get(
+                    f"https://api.replicate.com/v1/predictions/{pred_id}",
+                    headers={"Authorization": f"Token {api_key}"},
+                    timeout=30,
+                )
+                result = poll.json()
+                status = result.get("status")
+                print(f"[LTX-Replicate] Status: {status}")
+                if status == "succeeded":
+                    break
+                if status == "failed":
+                    raise RuntimeError(f"Replicate prediction failed: {result.get('error')}")
+
+        if result.get("status") != "succeeded":
+            raise RuntimeError(f"Replicate prediction timed out or failed: {result.get('error')}")
+
+        output_url = result["output"]
+        if isinstance(output_url, list):
+            output_url = output_url[0]
+
+        print(f"[LTX-Replicate] Output URL: {output_url}")
+
+        # 6. Download video
+        vid_r = requests.get(output_url, timeout=120)
+        vid_r.raise_for_status()
+        video_bytes = vid_r.content
+
+        out_path = get_output_path("replicate_a2v")
+        with open(out_path, "wb") as f:
+            f.write(video_bytes)
+        print(f"[LTX-Replicate] Video saved: {out_path}")
+
+        # 7. Decode to frames
+        frames = video_bytes_to_image_tensor(video_bytes)
+
+        # 8. UI preview (shows video directly in ComfyUI without external nodes)
+        # ComfyUI's output folder relative path for UI preview
+        if COMFY_AVAILABLE:
+            import folder_paths as fp
+            out_dir = fp.get_output_directory()
+            rel_path = os.path.relpath(out_path, out_dir)
+            subfolder = os.path.dirname(rel_path)
+            filename = os.path.basename(rel_path)
+            ui_videos = [{"filename": filename, "subfolder": subfolder, "type": "output"}]
+        else:
+            ui_videos = []
+
+        return {"ui": {"videos": ui_videos}, "result": (frames, out_path, float(fps))}
+
+
+NODE_CLASS_MAPPINGS["LTXAudioToVideoReplicate"] = LTXAudioToVideoReplicate
+NODE_DISPLAY_NAME_MAPPINGS["LTXAudioToVideoReplicate"] = "LTX Audio to Video (Replicate Fixed) 🎤✅"
