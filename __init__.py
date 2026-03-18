@@ -19,6 +19,22 @@ try:
 except ImportError:
     COMFY_AVAILABLE = False
 
+# ─── VIDEO type helper (native ComfyUI compat) ───────────────────────────────
+def _make_video_output(path: str):
+    """Wrap video path as ComfyUI VIDEO type object when available."""
+    try:
+        from comfy_api.input_impl import VideoInput
+        return VideoInput(path)
+    except ImportError:
+        pass
+    try:
+        from comfy.video_types import VideoOutput
+        return VideoOutput(path)
+    except ImportError:
+        pass
+    return path
+
+
 LTX_BASE_URL = "https://api.ltx.video/v1"
 UGUU_UPLOAD_URL = "https://uguu.se/upload"
 
@@ -343,7 +359,8 @@ def ltx_post(endpoint: str, api_key: str, payload: dict) -> tuple:
     else:
         ui_dict = {}
 
-    return frames, out_path, ui_dict
+    video_obj = _make_video_output(out_path)
+    return frames, video_obj, ui_dict
 
 
 # ─────────────────────────────────────────────────────────────────────────────
