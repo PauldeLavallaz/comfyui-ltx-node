@@ -383,8 +383,8 @@ class LTXAudioToVideo:
             },
         }
 
-    RETURN_TYPES = ("IMAGE", "STRING")
-    RETURN_NAMES = ("frames", "video_path")
+    RETURN_TYPES = ("IMAGE", "STRING", "FLOAT")
+    RETURN_NAMES = ("frames", "video_path", "fps")
     FUNCTION = "generate"
     CATEGORY = "LTX Video"
     OUTPUT_NODE = True
@@ -420,7 +420,7 @@ class LTXAudioToVideo:
             payload["duration"] = duration
 
         frames, video_path = ltx_post("audio-to-video", api_key.strip(), payload)
-        return (frames, video_path)
+        return (frames, video_path, 25.0)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -450,8 +450,8 @@ class LTXTextToVideo:
             },
         }
 
-    RETURN_TYPES = ("IMAGE", "STRING")
-    RETURN_NAMES = ("frames", "video_path")
+    RETURN_TYPES = ("IMAGE", "STRING", "FLOAT")
+    RETURN_NAMES = ("frames", "video_path", "fps")
     FUNCTION = "generate"
     CATEGORY = "LTX Video"
     OUTPUT_NODE = True
@@ -474,7 +474,7 @@ class LTXTextToVideo:
             payload["seed"] = seed
 
         frames, video_path = ltx_post("text-to-video", api_key.strip(), payload)
-        return (frames, video_path)
+        return (frames, video_path, 25.0)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -504,8 +504,8 @@ class LTXImageToVideo:
             },
         }
 
-    RETURN_TYPES = ("IMAGE", "STRING")
-    RETURN_NAMES = ("frames", "video_path")
+    RETURN_TYPES = ("IMAGE", "STRING", "FLOAT")
+    RETURN_NAMES = ("frames", "video_path", "fps")
     FUNCTION = "generate"
     CATEGORY = "LTX Video"
     OUTPUT_NODE = True
@@ -533,7 +533,7 @@ class LTXImageToVideo:
             payload["seed"] = seed
 
         frames, video_path = ltx_post("image-to-video", api_key.strip(), payload)
-        return (frames, video_path)
+        return (frames, video_path, 25.0)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -566,8 +566,8 @@ class LTXExtendVideo:
             },
         }
 
-    RETURN_TYPES = ("IMAGE", "STRING")
-    RETURN_NAMES = ("frames", "video_path")
+    RETURN_TYPES = ("IMAGE", "STRING", "FLOAT")
+    RETURN_NAMES = ("frames", "video_path", "fps")
     FUNCTION = "extend"
     CATEGORY = "LTX Video"
     OUTPUT_NODE = True
@@ -588,7 +588,7 @@ class LTXExtendVideo:
             payload["negative_prompt"] = negative_prompt
 
         frames, video_path = ltx_post("extend", api_key.strip(), payload)
-        return (frames, video_path)
+        return (frames, video_path, 25.0)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -621,8 +621,8 @@ class LTXRetakeVideo:
             },
         }
 
-    RETURN_TYPES = ("IMAGE", "STRING")
-    RETURN_NAMES = ("frames", "video_path")
+    RETURN_TYPES = ("IMAGE", "STRING", "FLOAT")
+    RETURN_NAMES = ("frames", "video_path", "fps")
     FUNCTION = "retake"
     CATEGORY = "LTX Video"
     OUTPUT_NODE = True
@@ -643,7 +643,7 @@ class LTXRetakeVideo:
             payload["negative_prompt"] = negative_prompt
 
         frames, video_path = ltx_post("retake", api_key.strip(), payload)
-        return (frames, video_path)
+        return (frames, video_path, 25.0)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
