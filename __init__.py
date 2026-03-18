@@ -332,7 +332,18 @@ def ltx_post(endpoint: str, api_key: str, payload: dict) -> tuple:
     print(f"[LTX] Video saved: {out_path}")
 
     frames = video_bytes_to_image_tensor(video_bytes)
-    return frames, out_path
+
+    # Build ComfyUI UI dict for native video preview
+    if COMFY_AVAILABLE:
+        out_dir_base = folder_paths.get_output_directory()
+        rel = os.path.relpath(out_path, out_dir_base)
+        ui_dict = {"videos": [{"filename": os.path.basename(rel),
+                                "subfolder": os.path.dirname(rel),
+                                "type": "output"}]}
+    else:
+        ui_dict = {}
+
+    return frames, out_path, ui_dict
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -419,8 +430,8 @@ class LTXAudioToVideo:
         if duration and duration > 0:
             payload["duration"] = duration
 
-        frames, video_path = ltx_post("audio-to-video", api_key.strip(), payload)
-        return (frames, video_path, 25.0)
+        frames, video_path, ui = ltx_post("audio-to-video", api_key.strip(), payload)
+        return {"ui": ui, "result": (frames, video_path, 25.0)}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -473,8 +484,8 @@ class LTXTextToVideo:
         if seed >= 0:
             payload["seed"] = seed
 
-        frames, video_path = ltx_post("text-to-video", api_key.strip(), payload)
-        return (frames, video_path, 25.0)
+        frames, video_path, ui = ltx_post("text-to-video", api_key.strip(), payload)
+        return {"ui": ui, "result": (frames, video_path, 25.0)}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -532,8 +543,8 @@ class LTXImageToVideo:
         if seed >= 0:
             payload["seed"] = seed
 
-        frames, video_path = ltx_post("image-to-video", api_key.strip(), payload)
-        return (frames, video_path, 25.0)
+        frames, video_path, ui = ltx_post("image-to-video", api_key.strip(), payload)
+        return {"ui": ui, "result": (frames, video_path, 25.0)}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -587,8 +598,8 @@ class LTXExtendVideo:
         if negative_prompt.strip():
             payload["negative_prompt"] = negative_prompt
 
-        frames, video_path = ltx_post("extend", api_key.strip(), payload)
-        return (frames, video_path, 25.0)
+        frames, video_path, ui = ltx_post("extend", api_key.strip(), payload)
+        return {"ui": ui, "result": (frames, video_path, 25.0)}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -642,8 +653,8 @@ class LTXRetakeVideo:
         if negative_prompt.strip():
             payload["negative_prompt"] = negative_prompt
 
-        frames, video_path = ltx_post("retake", api_key.strip(), payload)
-        return (frames, video_path, 25.0)
+        frames, video_path, ui = ltx_post("retake", api_key.strip(), payload)
+        return {"ui": ui, "result": (frames, video_path, 25.0)}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
