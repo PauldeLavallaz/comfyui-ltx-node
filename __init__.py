@@ -21,16 +21,20 @@ except ImportError:
 
 # ─── VIDEO type helper (native ComfyUI compat) ───────────────────────────────
 def _make_video_output(path: str):
-    """Wrap video path as ComfyUI VIDEO type object when available."""
+    """Wrap video path as ComfyUI VIDEO type object for SaveVideo compatibility.
+
+    ComfyUI's SaveVideo node calls video.get_dimensions() and video.save_to(),
+    so we must return a VideoFromFile object, not a plain string.
+    """
     try:
-        from comfy_api.input_impl import VideoInput
-        return VideoInput(path)
+        from comfy_api.input_impl import VideoFromFile
+        return VideoFromFile(path)
     except ImportError:
         pass
     try:
-        from comfy.video_types import VideoOutput
-        return VideoOutput(path)
-    except ImportError:
+        from comfy_api.latest._input_impl import VideoFromFile
+        return VideoFromFile(path)
+    except (ImportError, AttributeError):
         pass
     return path
 
