@@ -92,17 +92,47 @@ def _find_ffmpeg() -> str | None:
     import shutil
     if shutil.which("ffmpeg"):
         return "ffmpeg"
-    for p in ["/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/opt/conda/bin/ffmpeg"]:
+    for p in [
+        "/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/opt/conda/bin/ffmpeg",
+        "/opt/homebrew/bin/ffmpeg",  # Apple Silicon Homebrew
+        "/usr/local/opt/ffmpeg/bin/ffmpeg",  # Intel Homebrew
+    ]:
         if os.path.exists(p):
             return p
+    return None
+
+
+def _ffmpeg_to_mp3(raw_bytes: bytes, in_fmt: str = None) -> bytes | None:
+    """Convert arbitrary audio bytes to MP3 via ffmpeg. Returns None if ffmpeg missing."""
+    ffmpeg = _find_ffmpeg()
+    if not ffmpeg:
+        return None
+    try:
+        cmd = [ffmpeg, "-y"]
+        if in_fmt:
+            cmd += ["-f", in_fmt]
+        cmd += ["-i", "pipe:0", "-vn", "-ar", "44100", "-ac", "2",
+                "-b:a", "192k", "-f", "mp3", "pipe:1"]
+        result = subprocess.run(cmd, input=raw_bytes, capture_output=True, timeout=30)
+        if result.returncode == 0 and len(result.stdout) > 0:
+            print(f"[LTX] ffmpeg → MP3: {len(result.stdout)/1024:.1f} KB")
+            return result.stdout
+    except Exception as e:
+        print(f"[LTX] ffmpeg conversion failed: {e}")
     return None
 
 
 def audio_tensor_to_bytes(audio: dict) -> tuple:
     """
     Convert ComfyUI AUDIO dict {'waveform': Tensor[B,C,T], 'sample_rate': int}
-    to (bytes, mime_type). Tries torchaudio MP3 → torchaudio WAV → wave WAV.
-    No ffmpeg required.
+    to (bytes, mime_type, filename).
+
+    Pipeline (any input format → MP3):
+      1. ffmpeg from raw PCM → MP3  (most reliable, handles any sample rate/channels)
+      2. torchaudio → MP3
+      3. torchaudio → WAV
+      4. Python wave module → WAV   (pure stdlib, zero deps)
+    Returns (bytes, content_type, filename).
     """
     waveform = audio["waveform"]   # [B, C, T] float32 in [-1, 1]
     sample_rate = audio["sample_rate"]
@@ -112,47 +142,67 @@ def audio_tensor_to_bytes(audio: dict) -> tuple:
     if waveform.shape[0] > 2:
         waveform = waveform[:2]    # max stereo
 
-    # 1. Try torchaudio MP3
+    channels = waveform.shape[0]
+    samples = waveform.shape[1]
+
+    # ── 1. ffmpeg: PCM s16le → MP3 ──────────────────────────────────────────
+    try:
+        pcm = (waveform.cpu().numpy() * 32767).clip(-32768, 32767).astype("int16")
+        pcm_bytes = pcm.T.flatten().tobytes()
+        ffmpeg = _find_ffmpeg()
+        if ffmpeg:
+            cmd = [ffmpeg, "-y",
+                   "-f", "s16le", "-ar", str(sample_rate), "-ac", str(channels),
+                   "-i", "pipe:0",
+                   "-vn", "-ar", "44100", "-ac", "2", "-b:a", "192k",
+                   "-f", "mp3", "pipe:1"]
+            result = subprocess.run(cmd, input=pcm_bytes, capture_output=True, timeout=30)
+            if result.returncode == 0 and len(result.stdout) > 0:
+                print(f"[LTX] Audio via ffmpeg MP3: {len(result.stdout)/1024:.1f} KB")
+                return result.stdout, "audio/mpeg", "ltx_audio.mp3"
+    except Exception as e:
+        print(f"[LTX] ffmpeg PCM→MP3 failed ({e}), trying torchaudio...")
+
+    # ── 2. torchaudio MP3 ────────────────────────────────────────────────────
     try:
         import torchaudio
         buf = io.BytesIO()
         torchaudio.save(buf, waveform.cpu(), sample_rate, format="mp3")
         data = buf.getvalue()
-        print(f"[LTX] Audio encoded via torchaudio MP3: {len(data)/1024:.1f} KB")
-        return data, "audio/mpeg"
+        print(f"[LTX] Audio via torchaudio MP3: {len(data)/1024:.1f} KB")
+        return data, "audio/mpeg", "ltx_audio.mp3"
     except Exception as e:
         print(f"[LTX] torchaudio MP3 failed ({e}), trying WAV...")
 
-    # 2. Try torchaudio WAV
+    # ── 3. torchaudio WAV ────────────────────────────────────────────────────
     try:
         import torchaudio
         buf = io.BytesIO()
         torchaudio.save(buf, waveform.cpu(), sample_rate, format="wav")
         data = buf.getvalue()
-        print(f"[LTX] Audio encoded via torchaudio WAV: {len(data)/1024:.1f} KB")
-        return data, "audio/wav"
+        print(f"[LTX] Audio via torchaudio WAV: {len(data)/1024:.1f} KB")
+        return data, "audio/wav", "ltx_audio.wav"
     except Exception as e:
         print(f"[LTX] torchaudio WAV failed ({e}), trying wave module...")
 
-    # 3. Fallback: Python wave module (WAV, no deps)
-    import wave
-    channels = waveform.shape[0]
+    # ── 4. Pure-Python wave (stdlib, zero deps) ──────────────────────────────
+    import wave as wavemod
     pcm = (waveform.cpu().numpy() * 32767).clip(-32768, 32767).astype("int16")
     pcm_bytes = pcm.T.flatten().tobytes()
     buf = io.BytesIO()
-    with wave.open(buf, "wb") as wf:
+    with wavemod.open(buf, "wb") as wf:
         wf.setnchannels(channels)
         wf.setsampwidth(2)
         wf.setframerate(sample_rate)
         wf.writeframes(pcm_bytes)
     data = buf.getvalue()
-    print(f"[LTX] Audio encoded via wave module WAV: {len(data)/1024:.1f} KB")
-    return data, "audio/wav"
+    print(f"[LTX] Audio via wave module WAV: {len(data)/1024:.1f} KB")
+    return data, "audio/wav", "ltx_audio.wav"
 
 
 # Keep old name as alias for compatibility
 def audio_tensor_to_mp3_bytes(audio: dict) -> bytes:
-    data, _ = audio_tensor_to_bytes(audio)
+    data, _, __ = audio_tensor_to_bytes(audio)
     return data
 
 
@@ -331,11 +381,10 @@ class LTXAudioToVideo:
         img_bytes = tensor_to_jpeg_bytes(image, max_dim=1920)
         image_url = upload_to_uguu(img_bytes, "ltx_image.jpg", "image/jpeg")
 
-        # 2. Convert AUDIO tensor → MP3 and upload
+        # 2. Convert AUDIO tensor → MP3/WAV and upload
         print("[LTX] Encoding + uploading audio...")
-        audio_bytes, audio_mime = audio_tensor_to_bytes(audio)
-        audio_ext = "mp3" if "mpeg" in audio_mime else "wav"
-        audio_url = upload_to_uguu(audio_bytes, f"ltx_audio.{audio_ext}", audio_mime)
+        audio_bytes, audio_mime, audio_filename = audio_tensor_to_bytes(audio)
+        audio_url = upload_to_uguu(audio_bytes, audio_filename, audio_mime)
 
         # 3. Build payload
         payload = {
