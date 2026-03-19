@@ -40,68 +40,67 @@ def _make_video_output(path: str):
 
 
 LTX_BASE_URL = "https://api.ltx.video/v1"
-UGUU_UPLOAD_URL = "https://uguu.se/upload"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # UPLOAD HELPERS
 # ─────────────────────────────────────────────────────────────────────────────
 
-def upload_to_uguu(data: bytes, filename: str, content_type: str) -> str:
-    """Upload bytes and return public HTTPS URL with correct Content-Type.
+def upload_to_ltx(data: bytes, content_type: str, api_key: str) -> str:
+    """Upload file to LTX Cloud Storage via the official /v1/upload endpoint.
 
-    Strategy for audio:
-      1. catbox.moe (permanent, high-availability, no hotlink restrictions)
-      2. litterbox.catbox.moe (72h temp, fallback)
-      3. uguu.se (fallback for images)
+    Flow (per docs.ltx.video/api-documentation/api-reference/upload/create-upload):
+      1. POST /v1/upload → {upload_url, storage_uri, required_headers}
+      2. PUT upload_url with Content-Type + required_headers + binary data
+      3. Return storage_uri (e.g. ltx://uploads/abc-123) for use in generation
 
-    The LTX API validates Content-Type headers; 0x0.st and uguu.se sometimes
-    block or throttle external fetches from LTX servers (causes HTTP 400/500).
-    catbox.moe is widely whitelisted and returns direct URLs with correct MIME.
+    Benefits over external hosts:
+      - Guaranteed accessible from LTX inference servers
+      - Up to 100 MB
+      - No redirect, no hotlink issues
+      - Files available for 24 hours
     """
-    is_audio = content_type.startswith("audio/")
-
-    if is_audio:
-        # 1. catbox.moe — permanent, no hotlink restrictions, widely accessible
-        try:
-            r = requests.post(
-                "https://catbox.moe/user/api.php",
-                data={"reqtype": "fileupload", "userhash": ""},
-                files={"fileToUpload": (filename, data, content_type)},
-                timeout=60,
-            )
-            r.raise_for_status()
-            url = r.text.strip()
-            if url.startswith("https://"):
-                print(f"[LTX] Uploaded (catbox.moe) {filename} → {url}")
-                return url
-        except Exception as e:
-            print(f"[LTX] catbox.moe failed ({e}), trying litterbox...")
-
-        # 2. litterbox.catbox.moe — 72h temporary
-        try:
-            r = requests.post(
-                "https://litterbox.catbox.moe/resources/internals/api.php",
-                data={"reqtype": "fileupload", "time": "72h"},
-                files={"fileToUpload": (filename, data, content_type)},
-                timeout=60,
-            )
-            r.raise_for_status()
-            url = r.text.strip()
-            if url.startswith("https://"):
-                print(f"[LTX] Uploaded (litterbox) {filename} → {url}")
-                return url
-        except Exception as e:
-            print(f"[LTX] litterbox failed ({e}), falling back to uguu.se...")
-
-    # Fallback / images: uguu.se
-    files = {"files[]": (filename, data, content_type)}
-    r = requests.post(UGUU_UPLOAD_URL, files=files, timeout=60)
+    # Step 1: request signed upload URL
+    r = requests.post(
+        f"{LTX_BASE_URL}/upload",
+        headers={"Authorization": f"Bearer {api_key}"},
+        timeout=30,
+    )
     r.raise_for_status()
-    j = r.json()
-    url = j["files"][0]["url"]
-    print(f"[LTX] Uploaded (uguu.se) {filename} → {url}")
-    return url
+    info = r.json()
+    upload_url = info["upload_url"]
+    storage_uri = info["storage_uri"]
+    required_headers = info.get("required_headers", {})
+
+    # Step 2: PUT binary content
+    put_headers = {"Content-Type": content_type, **required_headers}
+    r2 = requests.put(upload_url, data=data, headers=put_headers, timeout=120)
+    r2.raise_for_status()
+
+    print(f"[LTX] Uploaded ({len(data)//1024}KB) → {storage_uri}")
+    return storage_uri
+
+
+# Keep as alias for backwards compat (used in non-audio-to-video nodes)
+def upload_to_uguu(data: bytes, filename: str, content_type: str, api_key: str = "") -> str:
+    """Backwards-compatible wrapper: uses LTX Cloud Storage if api_key given, else catbox."""
+    if api_key:
+        return upload_to_ltx(data, content_type, api_key)
+    # Fallback: catbox.moe for nodes that don't have api_key context
+    try:
+        r = requests.post(
+            "https://catbox.moe/user/api.php",
+            data={"reqtype": "fileupload", "userhash": ""},
+            files={"fileToUpload": (filename, data, content_type)},
+            timeout=60,
+        )
+        r.raise_for_status()
+        url = r.text.strip()
+        if url.startswith("https://"):
+            return url
+    except Exception as e:
+        print(f"[LTX] catbox fallback failed: {e}")
+    raise RuntimeError("No upload method available. Provide api_key for LTX Cloud Storage.")
 
 
 def tensor_to_jpeg_bytes(image_tensor, max_dim=1920) -> bytes:
@@ -424,15 +423,17 @@ class LTXAudioToVideo:
         if not api_key.strip():
             raise ValueError("LTX API key is required.")
 
-        # 1. Upload image to catbox.moe
+        key = api_key.strip()
+
+        # 1. Upload image to LTX Cloud Storage
         print("[LTX] Uploading image...")
         img_bytes = tensor_to_jpeg_bytes(image, max_dim=1920)
-        image_url = upload_to_uguu(img_bytes, "ltx_image.jpg", "image/jpeg")
+        image_url = upload_to_ltx(img_bytes, "image/jpeg", key)
 
-        # 2. Convert AUDIO tensor → MP3 and upload to catbox.moe
+        # 2. Encode audio → MP3, upload to LTX Cloud Storage
         print("[LTX] Encoding + uploading audio...")
         audio_bytes, audio_mime, audio_filename = audio_tensor_to_bytes(audio)
-        audio_url = upload_to_uguu(audio_bytes, audio_filename, audio_mime)
+        audio_url = upload_to_ltx(audio_bytes, audio_mime, key)
 
         # 3. Call API
         payload = {
