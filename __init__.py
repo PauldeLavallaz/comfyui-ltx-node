@@ -455,7 +455,7 @@ class LTXAudioToVideo:
 # ─────────────────────────────────────────────────────────────────────────────
 
 class LTXTextToVideo:
-    """Generate video from text prompt using LTX-2.3 API."""
+    """Generate video from text prompt using LTX API."""
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -465,13 +465,22 @@ class LTXTextToVideo:
                 "prompt": ("STRING", {"default": "", "multiline": True}),
             },
             "optional": {
-                "model": (["ltx-2-3-pro", "ltx-2-3-fast"], {"default": "ltx-2-3-pro"}),
-                "resolution": (["1920x1080", "1080x1920", "1440x1080", "4096x2160"], {"default": "1920x1080"}),
-                "duration": ("INT", {"default": 8, "min": 6, "max": 20}),
-                "negative_prompt": ("STRING", {
-                    "default": "blurry, distorted, low quality",
-                    "multiline": True,
-                }),
+                "model": (["ltx-2-3-pro", "ltx-2-3-fast", "ltx-2-pro", "ltx-2-fast"], {"default": "ltx-2-3-pro"}),
+                "resolution": ([
+                    "1920x1080", "1080x1920",
+                    "2560x1440", "1440x2560",
+                    "3840x2160", "2160x3840",
+                ], {"default": "1920x1080"}),
+                "duration": ("INT", {"default": 8, "min": 6, "max": 20,
+                    "tooltip": "Pro models: 6/8/10s. Fast models: 6-20s (even numbers)."}),
+                "fps": ("INT", {"default": 24, "min": 24, "max": 50,
+                    "tooltip": "24/25/48/50 for ltx-2-3 models. 25/50 for ltx-2 models."}),
+                "generate_audio": ("BOOLEAN", {"default": True,
+                    "tooltip": "Generate AI audio matching the scene."}),
+                "camera_motion": ([
+                    "none", "dolly_in", "dolly_out", "dolly_left", "dolly_right",
+                    "jib_up", "jib_down", "static", "focus_shift",
+                ], {"default": "none"}),
                 "seed": ("INT", {"default": -1, "min": -1, "max": 2147483647,
                                  "tooltip": "-1 for random."}),
             },
@@ -485,7 +494,8 @@ class LTXTextToVideo:
 
     def generate(self, api_key, prompt,
                  model="ltx-2-3-pro", resolution="1920x1080",
-                 duration=8, negative_prompt="", seed=-1):
+                 duration=8, fps=24, generate_audio=True,
+                 camera_motion="none", seed=-1):
         if not api_key.strip():
             raise ValueError("LTX API key is required.")
 
@@ -494,14 +504,17 @@ class LTXTextToVideo:
             "model": model,
             "resolution": resolution,
             "duration": duration,
+            "fps": fps,
+            "generate_audio": generate_audio,
         }
-        if negative_prompt.strip():
-            payload["negative_prompt"] = negative_prompt
+        if camera_motion != "none":
+            payload["camera_motion"] = camera_motion
         if seed >= 0:
             payload["seed"] = seed
 
+        out_fps = float(fps)
         frames, video_path, ui = ltx_post("text-to-video", api_key.strip(), payload)
-        return {"ui": ui, "result": (frames, video_path, 25.0)}
+        return {"ui": ui, "result": (frames, video_path, out_fps)}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -509,7 +522,7 @@ class LTXTextToVideo:
 # ─────────────────────────────────────────────────────────────────────────────
 
 class LTXImageToVideo:
-    """Animate a static image using LTX-2.3 API. Accepts ComfyUI IMAGE tensor."""
+    """Animate a static image using LTX API. Accepts ComfyUI IMAGE tensor."""
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -520,12 +533,24 @@ class LTXImageToVideo:
                 "prompt": ("STRING", {"default": "", "multiline": True}),
             },
             "optional": {
-                "model": (["ltx-2-3-pro", "ltx-2-3-fast"], {"default": "ltx-2-3-pro"}),
-                "resolution": (["1920x1080", "1080x1920", "1440x1080", "4096x2160"], {"default": "1920x1080"}),
-                "duration": ("INT", {"default": 8, "min": 6, "max": 20}),
-                "negative_prompt": ("STRING", {
-                    "default": "blurry, distorted, low quality",
-                    "multiline": True,
+                "model": (["ltx-2-3-pro", "ltx-2-3-fast", "ltx-2-pro", "ltx-2-fast"], {"default": "ltx-2-3-pro"}),
+                "resolution": ([
+                    "1920x1080", "1080x1920",
+                    "2560x1440", "1440x2560",
+                    "3840x2160", "2160x3840",
+                ], {"default": "1920x1080"}),
+                "duration": ("INT", {"default": 8, "min": 6, "max": 20,
+                    "tooltip": "Pro models: 6/8/10s. Fast models: 6-20s (even numbers)."}),
+                "fps": ("INT", {"default": 24, "min": 24, "max": 50,
+                    "tooltip": "24/25/48/50 for ltx-2-3 models. 25/50 for ltx-2 models."}),
+                "generate_audio": ("BOOLEAN", {"default": True,
+                    "tooltip": "Generate AI audio matching the scene."}),
+                "camera_motion": ([
+                    "none", "dolly_in", "dolly_out", "dolly_left", "dolly_right",
+                    "jib_up", "jib_down", "static", "focus_shift",
+                ], {"default": "none"}),
+                "last_frame": ("IMAGE", {
+                    "tooltip": "Optional last-frame image for first-to-last interpolation (ltx-2-3 only).",
                 }),
                 "seed": ("INT", {"default": -1, "min": -1, "max": 2147483647}),
             },
@@ -539,13 +564,16 @@ class LTXImageToVideo:
 
     def generate(self, api_key, image, prompt,
                  model="ltx-2-3-pro", resolution="1920x1080",
-                 duration=8, negative_prompt="", seed=-1):
+                 duration=8, fps=24, generate_audio=True,
+                 camera_motion="none", last_frame=None, seed=-1):
         if not api_key.strip():
             raise ValueError("LTX API key is required.")
 
+        key = api_key.strip()
+
         print("[LTX] Uploading image...")
         img_bytes = tensor_to_jpeg_bytes(image, max_dim=1920)
-        image_url = upload_to_uguu(img_bytes, "ltx_image.jpg", "image/jpeg")
+        image_url = upload_to_ltx(img_bytes, "image/jpeg", key)
 
         payload = {
             "image_uri": image_url,
@@ -553,14 +581,21 @@ class LTXImageToVideo:
             "model": model,
             "resolution": resolution,
             "duration": duration,
+            "fps": fps,
+            "generate_audio": generate_audio,
         }
-        if negative_prompt.strip():
-            payload["negative_prompt"] = negative_prompt
+        if camera_motion != "none":
+            payload["camera_motion"] = camera_motion
+        if last_frame is not None:
+            print("[LTX] Uploading last frame...")
+            last_bytes = tensor_to_jpeg_bytes(last_frame, max_dim=1920)
+            payload["last_frame_uri"] = upload_to_ltx(last_bytes, "image/jpeg", key)
         if seed >= 0:
             payload["seed"] = seed
 
-        frames, video_path, ui = ltx_post("image-to-video", api_key.strip(), payload)
-        return {"ui": ui, "result": (frames, video_path, 25.0)}
+        out_fps = float(fps)
+        frames, video_path, ui = ltx_post("image-to-video", key, payload)
+        return {"ui": ui, "result": (frames, video_path, out_fps)}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -568,7 +603,7 @@ class LTXImageToVideo:
 # ─────────────────────────────────────────────────────────────────────────────
 
 class LTXExtendVideo:
-    """Extend an existing video at the start or end using LTX-2.3 API."""
+    """Extend an existing video at the start or end using LTX API. Pro models only."""
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -578,18 +613,19 @@ class LTXExtendVideo:
                 "video_url": ("STRING", {
                     "default": "",
                     "multiline": False,
-                    "tooltip": "HTTPS URL to the video to extend.",
+                    "tooltip": "HTTPS URL or ltx:// storage URI of the video to extend.",
                 }),
-                "prompt": ("STRING", {"default": "", "multiline": True}),
             },
             "optional": {
-                "model": (["ltx-2-3-pro", "ltx-2-3-fast"], {"default": "ltx-2-3-pro"}),
-                "duration": ("INT", {"default": 6, "min": 2, "max": 20}),
-                "direction": (["end", "beginning"], {"default": "end"}),
-                "negative_prompt": ("STRING", {
-                    "default": "blurry, distorted, low quality",
-                    "multiline": True,
-                }),
+                "prompt": ("STRING", {"default": "", "multiline": True,
+                    "tooltip": "Describe what should happen in the extended portion."}),
+                "model": (["ltx-2-3-pro", "ltx-2-pro"], {"default": "ltx-2-3-pro"}),
+                "duration": ("INT", {"default": 6, "min": 2, "max": 20,
+                    "tooltip": "Extension length in seconds (2-20)."}),
+                "mode": (["end", "start"], {"default": "end",
+                    "tooltip": "Append to end or prepend to start."}),
+                "context": ("FLOAT", {"default": -1.0, "min": -1.0, "max": 20.0, "step": 0.5,
+                    "tooltip": "Context seconds from input video. -1 = auto-optimized."}),
             },
         }
 
@@ -599,20 +635,21 @@ class LTXExtendVideo:
     CATEGORY = "LTX Video"
     OUTPUT_NODE = True
 
-    def extend(self, api_key, video_url, prompt,
-               model="ltx-2-3-pro", duration=6, direction="end", negative_prompt=""):
+    def extend(self, api_key, video_url,
+               prompt="", model="ltx-2-3-pro", duration=6, mode="end", context=-1.0):
         if not api_key.strip():
             raise ValueError("LTX API key is required.")
 
         payload = {
             "video_uri": video_url.strip(),
-            "prompt": prompt,
             "model": model,
             "duration": duration,
-            "direction": direction,
+            "mode": mode,
         }
-        if negative_prompt.strip():
-            payload["negative_prompt"] = negative_prompt
+        if prompt.strip():
+            payload["prompt"] = prompt
+        if context >= 0:
+            payload["context"] = context
 
         frames, video_path, ui = ltx_post("extend", api_key.strip(), payload)
         return {"ui": ui, "result": (frames, video_path, 25.0)}
@@ -623,7 +660,7 @@ class LTXExtendVideo:
 # ─────────────────────────────────────────────────────────────────────────────
 
 class LTXRetakeVideo:
-    """Regenerate a specific section of a video using LTX-2.3 API."""
+    """Regenerate a specific section of a video using LTX API. Pro models only."""
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -633,18 +670,24 @@ class LTXRetakeVideo:
                 "video_url": ("STRING", {
                     "default": "",
                     "multiline": False,
-                    "tooltip": "HTTPS URL to the video to retake.",
+                    "tooltip": "HTTPS URL or ltx:// storage URI of the video to retake.",
                 }),
-                "prompt": ("STRING", {"default": "", "multiline": True}),
+                "start_time": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 60.0, "step": 0.1,
+                    "tooltip": "Section start time in seconds."}),
+                "duration": ("FLOAT", {"default": 5.0, "min": 2.0, "max": 20.0, "step": 0.5,
+                    "tooltip": "Section duration in seconds (min 2s)."}),
             },
             "optional": {
-                "model": (["ltx-2-3-pro", "ltx-2-3-fast"], {"default": "ltx-2-3-pro"}),
-                "start_frame": ("INT", {"default": 0, "min": 0, "max": 999}),
-                "end_frame": ("INT", {"default": 24, "min": 1, "max": 999}),
-                "negative_prompt": ("STRING", {
-                    "default": "blurry, distorted, low quality",
-                    "multiline": True,
-                }),
+                "prompt": ("STRING", {"default": "", "multiline": True,
+                    "tooltip": "Describe what should happen in the retaken section."}),
+                "model": (["ltx-2-3-pro", "ltx-2-pro"], {"default": "ltx-2-3-pro"}),
+                "mode": ([
+                    "replace_audio_and_video", "replace_video", "replace_audio",
+                ], {"default": "replace_audio_and_video",
+                    "tooltip": "What to regenerate in the section."}),
+                "resolution": (["1920x1080", "1080x1920"], {
+                    "default": "1920x1080",
+                    "tooltip": "Limited to 1080p. Auto-detected if omitted."}),
             },
         }
 
@@ -654,20 +697,22 @@ class LTXRetakeVideo:
     CATEGORY = "LTX Video"
     OUTPUT_NODE = True
 
-    def retake(self, api_key, video_url, prompt,
-               model="ltx-2-3-pro", start_frame=0, end_frame=24, negative_prompt=""):
+    def retake(self, api_key, video_url, start_time=0.0, duration=5.0,
+               prompt="", model="ltx-2-3-pro",
+               mode="replace_audio_and_video", resolution="1920x1080"):
         if not api_key.strip():
             raise ValueError("LTX API key is required.")
 
         payload = {
             "video_uri": video_url.strip(),
-            "prompt": prompt,
             "model": model,
-            "start_frame": start_frame,
-            "end_frame": end_frame,
+            "start_time": start_time,
+            "duration": duration,
+            "mode": mode,
+            "resolution": resolution,
         }
-        if negative_prompt.strip():
-            payload["negative_prompt"] = negative_prompt
+        if prompt.strip():
+            payload["prompt"] = prompt
 
         frames, video_path, ui = ltx_post("retake", api_key.strip(), payload)
         return {"ui": ui, "result": (frames, video_path, 25.0)}
@@ -679,14 +724,16 @@ class LTXRetakeVideo:
 
 class LTXImageUploader:
     """
-    Uploads a ComfyUI IMAGE tensor to uguu.se and returns a public HTTPS URL.
+    Uploads a ComfyUI IMAGE tensor to LTX Cloud Storage and returns a storage URI.
     Useful as input for LTXImageToVideo or LTXAudioToVideo when chaining nodes.
+    Files are available for 24 hours, up to 100 MB.
     """
 
     @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
+                "api_key": ("STRING", {"default": "", "multiline": False}),
                 "image": ("IMAGE",),
             },
             "optional": {
@@ -704,9 +751,11 @@ class LTXImageUploader:
     FUNCTION = "upload"
     CATEGORY = "LTX Video"
 
-    def upload(self, image, max_dimension=1920):
+    def upload(self, api_key, image, max_dimension=1920):
+        if not api_key.strip():
+            raise ValueError("LTX API key is required for cloud upload.")
         img_bytes = tensor_to_jpeg_bytes(image, max_dim=max_dimension)
-        url = upload_to_uguu(img_bytes, "ltx_image.jpg", "image/jpeg")
+        url = upload_to_ltx(img_bytes, "image/jpeg", api_key.strip())
         return (url,)
 
 
@@ -732,7 +781,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "LTXImageUploader": "LTX Image Uploader ☁️",
 }
 
-print("[LTX] LTX-2.3 ComfyUI nodes loaded ✅ — Audio/Image/Text to Video + Extend + Retake")
+print("[LTX] ComfyUI nodes loaded ✅ — Audio/Image/Text to Video + Extend + Retake + Upload")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
